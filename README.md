@@ -76,6 +76,7 @@ For advanced usage, you can import the components directly in your Python code:
 from simple_gpt.models import GPTModel
 from simple_gpt.utils import load_tokenizer
 from simple_gpt.trainers import Trainer
+from simple_gpt.configs import ModelConfig
 
 # Create a custom model
 model = GPTModel(
@@ -91,6 +92,53 @@ tokenizer = load_tokenizer()
 # Use the trainer for custom training loops
 trainer = Trainer(model, train_dataloader, eval_dataloader)
 trainer.train()
+
+# Load a trained model
+model_config = ModelConfig(model_type="gpt")
+loaded_model = Trainer.load_model("./output/my_model", model_config)
+```
+
+## Model Saving and Loading
+
+The trainer automatically saves the model architecture configuration alongside the weights, making it easier to load models correctly. When saving a model:
+
+```python
+trainer.save_model(output_dir)
+```
+
+This will create:
+- `pytorch_model.bin`: The model weights
+- `training_config.json`: Configuration used for training
+- `model_config.json`: Architecture parameters (dimensions, layers, etc.)
+
+When loading a model, you can provide default parameters that will be overridden by the saved configuration if available:
+
+```python
+from simple_gpt.configs import ModelConfig
+from simple_gpt.trainers import Trainer
+
+# Create a default model config
+model_config = ModelConfig()
+
+# Load the model - will automatically use parameters from model_config.json if it exists
+model = Trainer.load_model("./output/my_model", model_config)
+```
+
+## Extended Training
+
+For longer training runs with more data, you can use the extended training script:
+
+```bash
+python scripts/train_extended.py \
+    --model_type=gpt \
+    --d_model=512 \
+    --num_heads=8 \
+    --num_layers=8 \
+    --dataset_name=wikitext \
+    --dataset_config_name=wikitext-103-raw-v1 \
+    --max_train_samples=10000 \
+    --num_train_epochs=10 \
+    --output_dir=./output/long_training_model
 ```
 
 ## License

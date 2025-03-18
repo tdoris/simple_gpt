@@ -299,12 +299,69 @@ class Trainer:
         with open(os.path.join(output_dir, "training_config.json"), "w") as f:
             import json
             json.dump(config_dict, f, indent=2)
+            
+        # Save model architecture config
+        model_config = {}
+        if isinstance(self.model, GPTModel):
+            model_config = {
+                "model_type": "gpt",
+                "vocab_size": self.model.token_embedding.num_embeddings,
+                "d_model": self.model.d_model,
+                "num_heads": self.model.layers[0].self_attention.num_heads if self.model.layers else 0,
+                "num_layers": len(self.model.layers),
+                "d_ff": self.model.layers[0].feed_forward.fc1.out_features if self.model.layers else 0,
+                "max_seq_length": self.model.max_seq_length,
+                "dropout": self.model.dropout.p
+            }
+        elif isinstance(self.model, TransformerModel):
+            model_config = {
+                "model_type": "transformer",
+                "vocab_size": self.model.embedding.num_embeddings,
+                "d_model": self.model.d_model,
+                "num_heads": self.model.encoder_layers[0].self_attention.num_heads if self.model.encoder_layers else 0,
+                "num_layers": max(len(self.model.encoder_layers), len(self.model.decoder_layers)),
+                "num_encoder_layers": len(self.model.encoder_layers),
+                "num_decoder_layers": len(self.model.decoder_layers),
+                "d_ff": self.model.encoder_layers[0].feed_forward.fc1.out_features if self.model.encoder_layers else 0,
+                "max_seq_length": self.model.positional_encoding.pe.size(1),
+                "dropout": self.model.dropout.p
+            }
+            
+        with open(os.path.join(output_dir, "model_config.json"), "w") as f:
+            import json
+            json.dump(model_config, f, indent=2)
         
         logger.info(f"Model saved to {output_dir}")
     
     @classmethod
     def load_model(cls, model_path: str, model_config: ModelConfig):
         """Load a saved model."""
+        # Check if there's a saved model_config.json file and use it instead of the provided config
+        model_config_path = os.path.join(model_path, "model_config.json")
+        if os.path.exists(model_config_path):
+            logger.info(f"Loading model configuration from {model_config_path}")
+            with open(model_config_path, "r") as f:
+                import json
+                config_dict = json.load(f)
+                
+                # Update the model_config with the values from the saved config
+                model_config.model_type = config_dict.get("model_type", model_config.model_type)
+                model_config.vocab_size = config_dict.get("vocab_size", model_config.vocab_size)
+                model_config.d_model = config_dict.get("d_model", model_config.d_model)
+                model_config.num_heads = config_dict.get("num_heads", model_config.num_heads)
+                model_config.num_layers = config_dict.get("num_layers", model_config.num_layers)
+                model_config.d_ff = config_dict.get("d_ff", model_config.d_ff)
+                model_config.max_seq_length = config_dict.get("max_seq_length", model_config.max_seq_length)
+                model_config.dropout = config_dict.get("dropout", model_config.dropout)
+                
+                if "num_encoder_layers" in config_dict:
+                    model_config.num_encoder_layers = config_dict["num_encoder_layers"]
+                if "num_decoder_layers" in config_dict:
+                    model_config.num_decoder_layers = config_dict["num_decoder_layers"]
+                
+            logger.info(f"Using model configuration: d_model={model_config.d_model}, "
+                      f"num_heads={model_config.num_heads}, num_layers={model_config.num_layers}")
+        
         if model_config.model_type.lower() == "gpt":
             model = GPTModel(
                 vocab_size=model_config.vocab_size,
