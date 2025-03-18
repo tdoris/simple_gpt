@@ -22,6 +22,10 @@ screen -X -S $SCREEN_NAME quit >/dev/null 2>&1
 echo "CUDA information:"
 python -c "import torch; print(f'PyTorch version: {torch.__version__}'); print(f'CUDA available: {torch.cuda.is_available()}'); print(f'CUDA device count: {torch.cuda.device_count()}'); print(f'CUDA version: {torch.version.cuda}'); print(f'CUDNN version: {torch.backends.cudnn.version()}'); print(f'CUDA device: {torch.cuda.get_device_name(0)}') if torch.cuda.is_available() else print('No CUDA device available')" || echo "Failed to get CUDA information"
 
+# Test GPU with a small model
+echo "Running GPU test with a small model..."
+python test_gpu.py
+
 # Start training in a screen session
 echo "Starting new training session in screen..."
 screen -dmS $SCREEN_NAME bash -c "
