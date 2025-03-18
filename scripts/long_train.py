@@ -52,6 +52,18 @@ class CustomTrainer(Trainer):
         super().__init__(*args, **kwargs)
         self.metrics_logger = metrics_logger
         
+        # Force GPU check
+        if torch.cuda.is_available():
+            logger.info("CUDA is available! Moving model to GPU...")
+            self.model = self.model.cuda()
+            self.device = torch.device("cuda")
+            
+            # Print GPU usage
+            logger.info(f"Initial GPU memory usage: {torch.cuda.memory_allocated(0) / 1024**2:.2f} MB")
+            logger.info(f"Initial GPU memory cached: {torch.cuda.memory_reserved(0) / 1024**2:.2f} MB")
+        else:
+            logger.warning("CUDA is not available. Training on CPU will be slow!")
+        
     def train(self):
         """Train with metrics logging."""
         total_steps = 0
@@ -74,8 +86,12 @@ class CustomTrainer(Trainer):
                 # Move batch to device
                 batch = {k: v.to(self.device) for k, v in batch.items()}
                 
+                # Log GPU usage periodically
+                if step % 100 == 0 and torch.cuda.is_available():
+                    logger.info(f"GPU memory usage: {torch.cuda.memory_allocated(0) / 1024**2:.2f} MB")
+                    
                 # Forward pass with optional mixed precision
-                if self.config.fp16:
+                if self.config.fp16 and torch.cuda.is_available():
                     with torch.cuda.amp.autocast():
                         outputs = self._forward_pass(batch)
                         loss = outputs["loss"]
@@ -388,6 +404,17 @@ def main():
     
     # Initialize model
     logger.info(f"Initializing {model_config.model_type} model")
+    
+    # Check GPU availability
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    logger.info(f"Using device: {device}")
+    
+    if device.type == "cuda":
+        logger.info(f"GPU: {torch.cuda.get_device_name(0)}")
+        logger.info(f"CUDA Version: {torch.version.cuda}")
+        logger.info(f"PyTorch CUDA available: {torch.cuda.is_available()}")
+        logger.info(f"Current GPU memory usage: {torch.cuda.memory_allocated(0) / 1024**2:.2f} MB")
+    
     if model_config.model_type.lower() == "gpt":
         model = GPTModel(
             vocab_size=len(tokenizer),

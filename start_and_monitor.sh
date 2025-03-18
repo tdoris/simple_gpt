@@ -10,7 +10,20 @@ SCREEN_NAME="simplegpt_training"
 # Create output directory
 mkdir -p "$OUTPUT_DIR"
 
+# Check GPU availability
+echo "Checking GPU availability..."
+nvidia-smi || echo "WARNING: NVIDIA GPU not detected or driver not installed"
+
+# Kill any existing training sessions
+echo "Closing any existing 'simplegpt_training' screen sessions..."
+screen -X -S $SCREEN_NAME quit >/dev/null 2>&1
+
+# Print CUDA information
+echo "CUDA information:"
+python -c "import torch; print(f'PyTorch version: {torch.__version__}'); print(f'CUDA available: {torch.cuda.is_available()}'); print(f'CUDA device count: {torch.cuda.device_count()}'); print(f'CUDA version: {torch.version.cuda}'); print(f'CUDNN version: {torch.backends.cudnn.version()}'); print(f'CUDA device: {torch.cuda.get_device_name(0)}') if torch.cuda.is_available() else print('No CUDA device available')" || echo "Failed to get CUDA information"
+
 # Start training in a screen session
+echo "Starting new training session in screen..."
 screen -dmS $SCREEN_NAME bash -c "
     # Print useful information
     echo \"Starting training at $(date)\"
@@ -21,9 +34,17 @@ screen -dmS $SCREEN_NAME bash -c "
     # Set environment variables
     export HF_HOME=\"./cache/huggingface\"
     export HF_DATASETS_CACHE=\"./cache/datasets\"
+    export CUDA_VISIBLE_DEVICES=0
     
-    # Run the training script
-    python scripts/long_train.py \
+    # Run Python test to verify GPU is visible
+    echo 'Running GPU verification:'
+    python -c \"import torch; print('PyTorch can see GPU:', torch.cuda.is_available()); print('GPU device(s):', torch.cuda.device_count()); print('GPU name:', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'None')\"
+    
+    # Get initial GPU usage
+    nvidia-smi
+    
+    # Run the training script with explicit GPU settings
+    CUDA_VISIBLE_DEVICES=0 python scripts/long_train.py \
       --model_type=gpt \
       --d_model=768 \
       --num_heads=12 \
