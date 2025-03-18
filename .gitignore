@@ -1,0 +1,74 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Environment
+.env
+.venv
+env/
+venv/
+ENV/
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Data
+data/
+
+# Model outputs
+output/
+checkpoint*/
+runs/
+
+# Logs
+logs/
+*.log
+
+# WandB
+wandb/
+
+# IDEs and editors
+.idea/
+.vscode/
+*.swp
+*~
+
+# OS specific
+.DS_Store
+
+# HuggingFace cache
+cache/
+
+# Pytorch model files
+*.bin
