@@ -316,14 +316,20 @@ def main():
     logger.info(f"  Duration: epochs={args.num_train_epochs}, max_time={args.max_train_time}h")
     logger.info(f"  Dataset: {args.dataset_name}/{args.dataset_config_name}, train_samples={args.max_train_samples}")
     
-    # Configure HuggingFace cache
-    os.environ["HF_HOME"] = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../cache/huggingface")
-    os.environ["HF_DATASETS_CACHE"] = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../cache/datasets")
-    os.makedirs(os.environ["HF_HOME"], exist_ok=True)
-    os.makedirs(os.environ["HF_DATASETS_CACHE"], exist_ok=True)
+    # Configure HuggingFace cache - use local directory relative to output
+    cache_dir = os.path.join(os.path.dirname(os.path.abspath(args.output_dir)), "cache")
+    hf_cache_dir = os.path.join(cache_dir, "huggingface")
+    datasets_cache_dir = os.path.join(cache_dir, "datasets")
+    
+    os.makedirs(hf_cache_dir, exist_ok=True)
+    os.makedirs(datasets_cache_dir, exist_ok=True)
+    
+    logger.info(f"Using cache directories:")
+    logger.info(f"  HuggingFace cache: {hf_cache_dir}")
+    logger.info(f"  Datasets cache: {datasets_cache_dir}")
     
     # Load tokenizer (using GPT-2 tokenizer for consistency)
-    tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
+    tokenizer = GPT2Tokenizer.from_pretrained("gpt2", cache_dir=hf_cache_dir)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     
@@ -371,7 +377,11 @@ def main():
     
     # Load and prepare datasets
     logger.info(f"Loading dataset: {data_config.dataset_name}/{data_config.dataset_config_name}")
-    raw_datasets = load_dataset(data_config.dataset_name, data_config.dataset_config_name)
+    raw_datasets = load_dataset(
+        data_config.dataset_name, 
+        data_config.dataset_config_name,
+        cache_dir=datasets_cache_dir
+    )
     
     # Prepare datasets
     train_dataset, eval_dataset = prepare_datasets(
