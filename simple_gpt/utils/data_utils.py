@@ -173,3 +173,63 @@ def get_dataloader(
         pin_memory=True,
         collate_fn=collate_fn
     )
+
+
+def tokenize_function(examples, tokenizer, max_length=1024):
+    """Tokenize text examples for HuggingFace datasets."""
+    # Get the column name for texts
+    column_names = examples.keys()
+    text_column_name = "text" if "text" in column_names else list(column_names)[0]
+    
+    # Tokenize the texts
+    tokenized = tokenizer(
+        examples[text_column_name],
+        max_length=max_length,
+        truncation=True,
+        padding="max_length",
+        return_tensors="pt"
+    )
+    
+    # Add labels for language modeling (shifted tokens)
+    tokenized["labels"] = tokenized["input_ids"].clone()
+    
+    return tokenized
+
+
+def prepare_datasets(
+    raw_datasets, 
+    tokenizer, 
+    max_train_samples=None, 
+    max_val_samples=None, 
+    max_seq_length=1024
+):
+    """Prepare datasets from HuggingFace raw datasets."""
+    # Extract texts from the datasets
+    column_names = raw_datasets["train"].column_names
+    text_column_name = "text" if "text" in column_names else column_names[0]
+    
+    # Limit samples if requested
+    if max_train_samples is not None:
+        train_dataset = raw_datasets["train"].select(range(min(max_train_samples, len(raw_datasets["train"]))))
+    else:
+        train_dataset = raw_datasets["train"]
+    
+    if "validation" in raw_datasets:
+        if max_val_samples is not None:
+            eval_dataset = raw_datasets["validation"].select(range(min(max_val_samples, len(raw_datasets["validation"]))))
+        else:
+            eval_dataset = raw_datasets["validation"]
+    else:
+        # If no validation set is available, split the train set
+        train_val_split = int(0.9 * len(train_dataset))
+        eval_dataset = train_dataset.select(range(train_val_split, len(train_dataset)))
+        train_dataset = train_dataset.select(range(train_val_split))
+    
+    # Create the TextDataset objects
+    train_texts = train_dataset[text_column_name]
+    eval_texts = eval_dataset[text_column_name]
+    
+    train_dataset = TextDataset(train_texts, tokenizer, max_length=max_seq_length)
+    eval_dataset = TextDataset(eval_texts, tokenizer, max_length=max_seq_length)
+    
+    return train_dataset, eval_dataset
