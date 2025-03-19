@@ -92,7 +92,7 @@ class CustomTrainer(Trainer):
                     
                 # Forward pass with optional mixed precision
                 if self.config.fp16 and torch.cuda.is_available():
-                    with torch.cuda.amp.autocast():
+                    with torch.amp.autocast(device_type='cuda'):
                         outputs = self._forward_pass(batch)
                         loss = outputs["loss"]
                         loss = loss / self.config.gradient_accumulation_steps
@@ -395,7 +395,9 @@ def main():
     # Create data collator
     data_collator = DataCollatorForLanguageModeling(
         tokenizer=tokenizer, 
-        mlm=False
+        mlm=False,
+        pad_to_multiple_of=8,
+        return_tensors="pt"
     )
     
     # Create data loaders

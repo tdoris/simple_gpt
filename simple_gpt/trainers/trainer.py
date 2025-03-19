@@ -81,7 +81,7 @@ class Trainer:
         )
         
         # Setup mixed precision training if requested
-        self.scaler = torch.cuda.amp.GradScaler() if config.fp16 else None
+        self.scaler = torch.amp.GradScaler('cuda') if config.fp16 else None
         
         # Setup wandb
         self.use_wandb = use_wandb and has_wandb

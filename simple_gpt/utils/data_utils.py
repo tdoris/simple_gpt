@@ -14,8 +14,8 @@ class TextDataset(Dataset):
         self, 
         texts: List[str], 
         tokenizer: PreTrainedTokenizer, 
-        max_length: int = 128,  # Reduced from 1024 to make testing faster 
-        stride: int = 64  # Reduced from 512 to make testing faster
+        max_length: int = 512,  # Default to 512 to match training script 
+        stride: int = 256
     ):
         self.tokenizer = tokenizer
         self.max_length = max_length
@@ -31,39 +31,33 @@ class TextDataset(Dataset):
             valid_texts = ["Hello world. This is a test sentence to ensure the dataset is not empty."]
         
         for text in valid_texts:
-            tokenized = tokenizer.encode(text)
+            # Use tokenizer's encode_plus to get proper padding and attention masks
+            tokenized = tokenizer.encode_plus(
+                text,
+                max_length=max_length,
+                truncation=True,
+                padding="max_length",
+                return_tensors="pt"
+            )
             
-            # If the text is too short, just use it as is (with padding if needed)
-            if len(tokenized) < max_length:
-                if len(tokenized) > 1:  # Make sure there's at least 2 tokens for input/label
-                    self.examples.append(tokenized)
-                continue
-                
-            # Create chunks with specified max_length and stride
-            for i in range(0, len(tokenized) - max_length + 1, stride):
-                chunk = tokenized[i:i + max_length]
-                if len(chunk) == max_length:
-                    self.examples.append(chunk)
-            
-            # Include the last chunk if it's not already included and has enough tokens
-            last_chunk = tokenized[-max_length:]
-            if len(last_chunk) >= 2:  # Make sure there's at least 2 tokens for input/label
-                self.examples.append(last_chunk)
+            # Add to examples
+            self.examples.append({
+                "input_ids": tokenized["input_ids"].squeeze(),
+                "attention_mask": tokenized["attention_mask"].squeeze(),
+                "labels": tokenized["input_ids"].squeeze().clone()
+            })
     
     def __len__(self) -> int:
         return len(self.examples)
     
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         example = self.examples[idx]
-        input_ids = example[:-1]  # Input: all tokens except the last one
-        labels = example[1:]     # Labels: all tokens except the first one
         
-        attention_mask = [1] * len(input_ids)
-        
+        # Use input_ids as is for causal LM (no need to shift for this dataset approach)
         return {
-            "input_ids": torch.tensor(input_ids, dtype=torch.long),
-            "attention_mask": torch.tensor(attention_mask, dtype=torch.long),
-            "labels": torch.tensor(labels, dtype=torch.long)
+            "input_ids": example["input_ids"],
+            "attention_mask": example["attention_mask"],
+            "labels": example["labels"]
         }
 
 
@@ -187,11 +181,11 @@ def tokenize_function(examples, tokenizer, max_length=1024):
         max_length=max_length,
         truncation=True,
         padding="max_length",
-        return_tensors="pt"
+        return_special_tokens_mask=True
     )
     
     # Add labels for language modeling (shifted tokens)
-    tokenized["labels"] = tokenized["input_ids"].clone()
+    tokenized["labels"] = tokenized["input_ids"].copy()
     
     return tokenized
 
@@ -201,7 +195,7 @@ def prepare_datasets(
     tokenizer, 
     max_train_samples=None, 
     max_val_samples=None, 
-    max_seq_length=1024
+    max_seq_length=512
 ):
     """Prepare datasets from HuggingFace raw datasets."""
     # Extract texts from the datasets
@@ -225,10 +219,11 @@ def prepare_datasets(
         eval_dataset = train_dataset.select(range(train_val_split, len(train_dataset)))
         train_dataset = train_dataset.select(range(train_val_split))
     
-    # Create the TextDataset objects
+    # Create the TextDataset objects with proper sequence length
     train_texts = train_dataset[text_column_name]
     eval_texts = eval_dataset[text_column_name]
     
+    # Make sure we're using the same max_seq_length everywhere
     train_dataset = TextDataset(train_texts, tokenizer, max_length=max_seq_length)
     eval_dataset = TextDataset(eval_texts, tokenizer, max_length=max_seq_length)
     
