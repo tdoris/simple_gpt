@@ -290,6 +290,8 @@ def parse_args():
     # Logging
     parser.add_argument("--metrics_file", type=str, default="metrics.json",
                         help="File to save training metrics")
+    parser.add_argument("--debug_mode", action="store_true",
+                        help="Enable verbose debug logging")
     
     return parser.parse_args()
 
@@ -303,6 +305,11 @@ def main():
     # Setup file logging
     log_file = os.path.join(args.output_dir, "training.log")
     setup_file_logging(log_file)
+    
+    # Set debug level if requested
+    if args.debug_mode:
+        logging.getLogger().setLevel(logging.DEBUG)
+        logger.info("Debug mode enabled - verbose logging activated")
     
     # Create metrics logger
     metrics_file = os.path.join(args.output_dir, args.metrics_file)
@@ -384,6 +391,11 @@ def main():
     )
     
     # Prepare datasets
+    if args.debug_mode:
+        logger.debug("Starting to prepare datasets from raw data")
+        logger.debug(f"Raw dataset structure: {raw_datasets}")
+        logger.debug(f"Max sequence length: {model_config.max_seq_length}")
+        
     train_dataset, eval_dataset = prepare_datasets(
         raw_datasets, 
         tokenizer, 
@@ -391,6 +403,19 @@ def main():
         max_val_samples=data_config.max_val_samples,
         max_seq_length=model_config.max_seq_length
     )
+    
+    if args.debug_mode:
+        logger.debug(f"Train dataset size: {len(train_dataset)} examples")
+        logger.debug(f"Validation dataset size: {len(eval_dataset)} examples")
+        # Print sample structure
+        if len(train_dataset) > 0:
+            sample = train_dataset[0]
+            logger.debug(f"Sample training example structure:")
+            for key, value in sample.items():
+                if hasattr(value, 'shape'):
+                    logger.debug(f"  {key}: shape={value.shape}, dtype={value.dtype}")
+                else:
+                    logger.debug(f"  {key}: {type(value)}")
     
     # Create data collator
     data_collator = DataCollatorForLanguageModeling(
@@ -466,9 +491,38 @@ def main():
     # Save configuration files
     with open(os.path.join(args.output_dir, "args.json"), "w") as f:
         json.dump(vars(args), f, indent=2)
+        
+    # Save model config for later loading
+    model_config_dict = {
+        "model_type": model_config.model_type,
+        "d_model": model_config.d_model,
+        "num_heads": model_config.num_heads,
+        "num_layers": model_config.num_layers,
+        "d_ff": model_config.d_ff,
+        "max_seq_length": model_config.max_seq_length,
+        "dropout": model_config.dropout,
+        "vocab_size": len(tokenizer)
+    }
+    
+    with open(os.path.join(args.output_dir, "model_config.json"), "w") as f:
+        json.dump(model_config_dict, f, indent=2)
     
     # Train model
     logger.info("Starting training")
+    if args.debug_mode:
+        logger.debug("Debug information before training:")
+        logger.debug(f"Model architecture summary: {model}")
+        logger.debug(f"Number of parameters: {sum(p.numel() for p in model.parameters()):,}")
+        logger.debug(f"Training config: {vars(training_config)}")
+        logger.debug(f"First batch check:")
+        
+        # Try getting a sample batch
+        first_batch = next(iter(train_dataloader))
+        for key, value in first_batch.items():
+            logger.debug(f"  {key}: shape={value.shape if hasattr(value, 'shape') else 'N/A'}")
+            
+        logger.debug("Attempting a forward pass with sample batch...")
+    
     train_start = time.time()
     trainer.train()
     train_end = time.time()
