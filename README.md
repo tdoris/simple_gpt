@@ -1,4 +1,4 @@
-# Simple GPT
+# SimpleGPT
 
 A Python implementation of a transformer-based language model inspired by GPT (Generative Pre-trained Transformer) architecture. This project aims to provide a clear and educational implementation of modern transformer models for text generation.
 
@@ -10,6 +10,7 @@ A Python implementation of a transformer-based language model inspired by GPT (G
 - Integration with the Hugging Face ecosystem (tokenizers, datasets)
 - Text generation with various sampling strategies
 - Optional Weights & Biases integration for experiment tracking
+- Robust training with automatic hang detection and recovery
 
 ## Installation
 
@@ -24,26 +25,53 @@ pip install -e .
 
 ## Quick Start
 
-### Training a model
+### Testing Training Pipeline
+
+To quickly verify the training pipeline works correctly:
 
 ```bash
-python -m simple_gpt.scripts.train \
-    --model_type=gpt \
-    --dataset_name=wikitext \
-    --dataset_config_name=wikitext-103-raw-v1 \
-    --num_train_epochs=3 \
-    --output_dir=./output/my_gpt_model
+./test_long_training.sh
 ```
 
-### Generating text
+This will train a small GPT model on a subset of WikiText and generate sample text.
+
+### Extended Training with Monitoring
+
+For robust training with automatic hang detection:
 
 ```bash
-python -m simple_gpt.scripts.generate \
-    --model_path=./output/my_gpt_model \
-    --prompt="In a world where AI had become sentient, " \
-    --max_length=200 \
-    --do_sample \
-    --temperature=0.8
+./start_and_monitor.sh
+```
+
+This script will:
+1. Start the long training process
+2. Monitor for any training hangs
+3. Automatically restart training if it detects issues
+4. Create checkpoints during training
+
+### Generating Text from a Trained Model
+
+```bash
+./run_text_generation.sh <model_path> "<prompt>" [options]
+```
+
+Options:
+- `--max_length <n>`: Maximum length of generated text (default: 100)
+- `--temperature <t>`: Temperature for sampling (default: 0.8)
+- `--top_p <p>`: Top-p nucleus sampling parameter (default: 0.9)
+- `--num_samples <n>`: Number of text samples to generate (default: 1)
+
+Example:
+```bash
+./run_text_generation.sh ./output/latest_extended_training "Once upon a time" --max_length 200 --temperature 0.7
+```
+
+### Inspecting Models
+
+To inspect a trained model:
+
+```bash
+python inspect_model.py --model_path <model_path> [--verbose]
 ```
 
 ## Model Architecture
@@ -67,6 +95,47 @@ The behavior of the models and training process can be customized through config
 - `TrainingConfig`: Configure training hyperparameters (learning rate, batch size, etc.)
 - `DataConfig`: Configure dataset loading and preprocessing
 - `GenerationConfig`: Configure text generation parameters (temperature, sampling, etc.)
+
+## Training Scripts
+
+### Basic Training
+
+```bash
+python -m simple_gpt.scripts.train \
+    --model_type=gpt \
+    --dataset_name=wikitext \
+    --dataset_config_name=wikitext-103-raw-v1 \
+    --num_train_epochs=3 \
+    --output_dir=./output/my_gpt_model
+```
+
+### Extended Training
+
+For longer training runs with more data, use the long_train.py script:
+
+```bash
+python scripts/long_train.py \
+    --model_type=gpt \
+    --d_model=768 \
+    --num_heads=12 \
+    --num_layers=12 \
+    --d_ff=3072 \
+    --max_seq_length=512 \
+    --dropout=0.1 \
+    --output_dir=./output/extended_training \
+    --batch_size=4 \
+    --gradient_accumulation_steps=8 \
+    --learning_rate=3e-5 \
+    --num_train_epochs=10 \
+    --max_train_time=12 \
+    --warmup_ratio=0.1 \
+    --fp16 \
+    --dataset_name=wikitext \
+    --dataset_config_name=wikitext-103-raw-v1 \
+    --max_train_samples=50000
+```
+
+For debugging issues with training, add the `--debug_mode` flag.
 
 ## Advanced Usage
 
@@ -124,22 +193,38 @@ model_config = ModelConfig()
 model = Trainer.load_model("./output/my_model", model_config)
 ```
 
-## Extended Training
+## Training Monitoring
 
-For longer training runs with more data, you can use the extended training script:
+During training, you can monitor the progress using:
 
 ```bash
-python scripts/train_extended.py \
-    --model_type=gpt \
-    --d_model=512 \
-    --num_heads=8 \
-    --num_layers=8 \
-    --dataset_name=wikitext \
-    --dataset_config_name=wikitext-103-raw-v1 \
-    --max_train_samples=10000 \
-    --num_train_epochs=10 \
-    --output_dir=./output/long_training_model
+python scripts/monitor_training.py --metrics_file <path_to_metrics_file>
 ```
+
+This will show a real-time display of:
+- Training loss
+- Evaluation metrics
+- GPU usage
+- Estimated time remaining
+
+## Troubleshooting
+
+### Training Hangs
+
+If training seems to hang, you can try:
+
+1. Use the `start_and_monitor.sh` script which automatically detects and restarts hanged training.
+2. Reduce batch size or model dimensions if you're running out of memory.
+3. Enable `--debug_mode` to get more verbose logging about what's happening.
+
+### GPU Memory Issues
+
+If you encounter GPU memory issues:
+
+1. Reduce `--batch_size` and increase `--gradient_accumulation_steps` to maintain effective batch size.
+2. Reduce model size (d_model, num_layers, num_heads).
+3. Reduce sequence length with `--max_seq_length`.
+4. Enable mixed precision training with `--fp16`.
 
 ## License
 
