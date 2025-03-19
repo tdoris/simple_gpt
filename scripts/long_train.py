@@ -312,7 +312,12 @@ def main():
         logger.info("Debug mode enabled - verbose logging activated")
     
     # Create metrics logger
-    metrics_file = os.path.join(args.output_dir, args.metrics_file)
+    # Check if metrics_file is an absolute path or just a filename
+    if os.path.isabs(args.metrics_file) or args.metrics_file.startswith('./'):
+        metrics_file = args.metrics_file
+    else:
+        metrics_file = os.path.join(args.output_dir, args.metrics_file)
+    logger.info(f"Metrics will be saved to: {metrics_file}")
     metrics_logger = MetricsLogger(metrics_file)
     
     # Log start of training and parameters

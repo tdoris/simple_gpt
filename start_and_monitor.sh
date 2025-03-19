@@ -78,7 +78,7 @@ python scripts/long_train.py \
   --dataset_config_name=wikitext-103-raw-v1 \
   --max_train_samples=50000 \
   --max_val_samples=5000 \
-  --metrics_file="$METRICS_FILE" \
+  --metrics_file="metrics.json" \
   > "$LOG_FILE" 2>&1 &
 
 TRAINING_PID=$!
@@ -169,7 +169,7 @@ function restart_training() {
       --dataset_config_name=wikitext-103-raw-v1 \
       --max_train_samples=50000 \
       --max_val_samples=5000 \
-      --metrics_file="$new_metrics_file" \
+      --metrics_file="metrics.json" \
       --debug_mode \
       > "$new_log_file" 2>&1 &
     
