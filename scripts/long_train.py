@@ -183,7 +183,7 @@ class CustomTrainer(Trainer):
                 # Check if we reached max_steps
                 total_steps += 1
                 if self.config.max_steps > 0 and total_steps >= self.config.max_steps:
-                    epoch_iterator.close()
+                    # DataLoader doesn't have a close method, just break out of the loop
                     break
             
             # Log epoch completion time
