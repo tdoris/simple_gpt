@@ -1,119 +1,40 @@
 #!/bin/bash
 
-# Script to check training progress
+# Simple script to check training progress
+echo "SimpleGPT Training Progress Check"
+echo "================================="
 
-# Default metrics file location
-METRICS_FILE="./output/latest_training/metrics.json"
+# Path to latest training metrics
+METRICS_FILE="/home/jim/repos/simple_gpt/output/slimpajama_all_20250324_084832/metrics.json"
+echo "Checking metrics file: $METRICS_FILE"
+echo
 
-# Allow overriding the metrics file path
-if [ $# -gt 0 ]; then
-  METRICS_FILE="$1"
-fi
+# Latest step and loss
+echo "Latest training information:"
+LATEST_STEP=$(grep '"step":' "$METRICS_FILE" | tail -n 1 | cut -d':' -f2 | cut -d',' -f1)
+LATEST_LOSS=$(grep '"loss":' "$METRICS_FILE" | tail -n 1 | cut -d':' -f2 | cut -d',' -f1)
+echo "Current step: $LATEST_STEP"
+echo "Current loss: $LATEST_LOSS"
+echo
 
-# Check if the metrics file exists
-if [ ! -f "$METRICS_FILE" ]; then
-  echo "Metrics file not found: $METRICS_FILE"
-  echo "No training in progress or the training hasn't started logging metrics yet."
-  exit 1
-fi
+# Latest evaluation metrics
+echo "Latest evaluation metrics:"
+grep -B3 "eval_perplexity" "$METRICS_FILE" | tail -n 4
 
-# Check if jq is installed
-if ! command -v jq &> /dev/null; then
-  echo "jq is not installed. Using basic metrics display."
-  
-  # Show last few lines of metrics file
-  echo "=== Latest metrics ==="
-  tail -n 20 "$METRICS_FILE"
-  
-  # Check if training process is running
-  TRAINING_DIR=$(dirname "$METRICS_FILE")
-  if [ -f "$TRAINING_DIR/training.log" ]; then
-    echo ""
-    echo "=== Latest log entries ==="
-    tail -n 10 "$TRAINING_DIR/training.log"
-  fi
-  
-  exit 0
-fi
+# Training time and remaining time
+echo
+echo "Time information:"
+ELAPSED=$(grep '"elapsed":' "$METRICS_FILE" | tail -n 1 | cut -d':' -f2 | cut -d',' -f1)
+ELAPSED_HOURS=$(echo "$ELAPSED / 3600" | bc -l | xargs printf "%.2f")
+REMAINING=$(grep "estimated_remaining" "$METRICS_FILE" | tail -n 1)
+echo "Elapsed training time: $ELAPSED_HOURS hours"
+echo $REMAINING
 
-# Get latest metrics
-echo "=== Training Progress Report ==="
-echo "Metrics file: $METRICS_FILE"
-echo ""
+# Training speed
+echo
+echo "Training speed:"
+SPEED=$(grep '"samples_per_second":' "$METRICS_FILE" | tail -n 1 | cut -d':' -f2 | cut -d',' -f1)
+echo "Current speed: $SPEED samples/second"
 
-# Get the latest entry
-LATEST=$(jq -r 'if type=="array" then .[-1] else . end' "$METRICS_FILE")
-
-# Extract information
-STEP=$(echo "$LATEST" | jq -r '.step // .global_step // "N/A"')
-LOSS=$(echo "$LATEST" | jq -r '.loss // "N/A"')
-EVAL_LOSS=$(echo "$LATEST" | jq -r '.eval_loss // "N/A"')
-PERPLEXITY=$(echo "$LATEST" | jq -r '.eval_perplexity // "N/A"')
-LEARNING_RATE=$(echo "$LATEST" | jq -r '.learning_rate // "N/A"')
-ELAPSED=$(echo "$LATEST" | jq -r '.elapsed // "N/A"')
-REMAINING=$(echo "$LATEST" | jq -r '.estimated_remaining // "N/A"')
-EPOCH=$(echo "$LATEST" | jq -r '.epoch // "N/A"')
-
-# Format time if it's a number
-if [[ "$ELAPSED" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
-  HOURS=$((ELAPSED / 3600))
-  MINUTES=$(((ELAPSED % 3600) / 60))
-  SECONDS=$((ELAPSED % 60))
-  ELAPSED="${HOURS}h ${MINUTES}m ${SECONDS}s"
-fi
-
-# Display information
-echo "Current Status:"
-echo "  Step: $STEP"
-echo "  Epoch: $EPOCH"
-echo "  Training Loss: $LOSS"
-echo "  Evaluation Loss: $EVAL_LOSS"
-echo "  Perplexity: $PERPLEXITY"
-echo "  Learning Rate: $LEARNING_RATE"
-echo "  Elapsed Time: $ELAPSED"
-echo "  Estimated Remaining: $REMAINING"
-echo ""
-
-# Check GPU usage
-echo "=== GPU Status ==="
-nvidia-smi
-
-# Get training directory
-TRAINING_DIR=$(dirname "$METRICS_FILE")
-
-# Check if there are any checkpoint directories
-if [ -d "$TRAINING_DIR" ]; then
-  # Count checkpoints
-  CHECKPOINT_COUNT=$(find "$TRAINING_DIR" -type d -name "checkpoint-*" | wc -l)
-  
-  echo ""
-  echo "=== Training Stats ==="
-  echo "Checkpoints saved: $CHECKPOINT_COUNT"
-  
-  # Check how long ago the metrics file was modified
-  LAST_MODIFIED=$(stat -c %Y "$METRICS_FILE" 2>/dev/null || stat -f %m "$METRICS_FILE" 2>/dev/null)
-  CURRENT_TIME=$(date +%s)
-  
-  if [ ! -z "$LAST_MODIFIED" ]; then
-    TIME_DIFF=$((CURRENT_TIME - LAST_MODIFIED))
-    
-    if [ $TIME_DIFF -lt 300 ]; then
-      echo "Status: ACTIVE (last update: $((TIME_DIFF / 60))m ${TIME_DIFF % 60}s ago)"
-    else
-      echo "Status: INACTIVE (last update: $((TIME_DIFF / 60))m ago)"
-      echo "Training may have completed or stalled."
-    fi
-  fi
-fi
-
-# Check log file
-LOG_FILE="$TRAINING_DIR/training.log"
-if [ -f "$LOG_FILE" ]; then
-  echo ""
-  echo "=== Recent Log Entries ==="
-  tail -n 10 "$LOG_FILE"
-fi
-
-echo ""
-echo "To see the full metrics, run:"
-echo "python scripts/plot_metrics.py --metrics_file=\"$METRICS_FILE\""
+echo
+echo "================================="
