@@ -252,6 +252,8 @@ def parse_args():
                         help="Maximum sequence length")
     parser.add_argument("--dropout", type=float, default=0.1,
                         help="Dropout rate")
+    parser.add_argument("--checkpoint_path", type=str, default=None,
+                        help="Path to a checkpoint to continue training from")
     
     # Training configuration
     parser.add_argument("--output_dir", type=str, default="./output/long_training",
@@ -282,10 +284,15 @@ def parse_args():
                         help="Dataset name from Hugging Face datasets")
     parser.add_argument("--dataset_config_name", type=str, default="wikitext-103-raw-v1",
                         help="Dataset configuration name")
-    parser.add_argument("--max_train_samples", type=int, default=25000,
-                        help="Maximum number of training samples")
-    parser.add_argument("--max_val_samples", type=int, default=2000,
-                        help="Maximum number of validation samples")
+    parser.add_argument("--use_slimpajama", action="store_true",
+                        help="Use the SlimPajama-30B dataset instead of the default dataset")
+    parser.add_argument("--slimpajama_subset", type=str, default="all",
+                        choices=["all", "arxiv", "github", "stackexchange", "wiki", "books", "c4", "common_crawl"],
+                        help="Subset of SlimPajama-30B to use")
+    parser.add_argument("--max_train_samples", type=int, default=None,
+                        help="Maximum number of training samples (None uses the entire dataset)")
+    parser.add_argument("--max_val_samples", type=int, default=None,
+                        help="Maximum number of validation samples (None uses the entire validation set)")
     
     # Logging
     parser.add_argument("--metrics_file", type=str, default="metrics.json",
@@ -345,7 +352,7 @@ def main():
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     
-    # Create configs
+    # Create model config
     model_config = ModelConfig(
         model_type=args.model_type,
         d_model=args.d_model,
@@ -355,6 +362,33 @@ def main():
         max_seq_length=args.max_seq_length,
         dropout=args.dropout
     )
+    
+    # If checkpoint path provided, load configuration from there
+    if args.checkpoint_path:
+        logger.info(f"Continuing training from checkpoint: {args.checkpoint_path}")
+        model_config_path = os.path.join(args.checkpoint_path, "model_config.json")
+        if os.path.exists(model_config_path):
+            logger.info(f"Loading model configuration from {model_config_path}")
+            with open(model_config_path, "r") as f:
+                config_dict = json.load(f)
+                
+                # Update the model_config with the values from the saved config
+                model_config.model_type = config_dict.get("model_type", model_config.model_type)
+                model_config.vocab_size = config_dict.get("vocab_size", model_config.vocab_size)
+                model_config.d_model = config_dict.get("d_model", model_config.d_model)
+                model_config.num_heads = config_dict.get("num_heads", model_config.num_heads)
+                model_config.num_layers = config_dict.get("num_layers", model_config.num_layers)
+                model_config.d_ff = config_dict.get("d_ff", model_config.d_ff)
+                model_config.max_seq_length = config_dict.get("max_seq_length", model_config.max_seq_length)
+                model_config.dropout = config_dict.get("dropout", model_config.dropout)
+                
+                if "num_encoder_layers" in config_dict:
+                    model_config.num_encoder_layers = config_dict["num_encoder_layers"]
+                if "num_decoder_layers" in config_dict:
+                    model_config.num_decoder_layers = config_dict["num_decoder_layers"]
+                
+            logger.info(f"Using model configuration from checkpoint: d_model={model_config.d_model}, "
+                      f"num_heads={model_config.num_heads}, num_layers={model_config.num_layers}")
     
     # Calculate max_steps based on max_train_time if provided
     # Estimating 10 steps per minute for a model with d_model=768, num_layers=6, batch_size=4
@@ -388,12 +422,124 @@ def main():
     )
     
     # Load and prepare datasets
-    logger.info(f"Loading dataset: {data_config.dataset_name}/{data_config.dataset_config_name}")
-    raw_datasets = load_dataset(
-        data_config.dataset_name, 
-        data_config.dataset_config_name,
-        cache_dir=datasets_cache_dir
-    )
+    # Initialize model either from scratch or from checkpoint
+    if args.checkpoint_path:
+        try:
+            model = Trainer.load_model(args.checkpoint_path, model_config)
+            logger.info(f"Successfully loaded model weights from checkpoint: {args.checkpoint_path}")
+        except Exception as e:
+            logger.error(f"Error loading model from checkpoint: {e}")
+            logger.info("Falling back to initializing a new model")
+            if model_config.model_type.lower() == "gpt":
+                model = GPTModel(
+                    vocab_size=tokenizer.vocab_size,
+                    d_model=model_config.d_model,
+                    num_heads=model_config.num_heads,
+                    num_layers=model_config.num_layers,
+                    d_ff=model_config.d_ff,
+                    max_seq_length=model_config.max_seq_length,
+                    dropout=model_config.dropout
+                )
+            else:  # "transformer"
+                model = TransformerModel(
+                    vocab_size=tokenizer.vocab_size,
+                    d_model=model_config.d_model,
+                    num_heads=model_config.num_heads,
+                    num_encoder_layers=model_config.num_encoder_layers,
+                    num_decoder_layers=model_config.num_decoder_layers,
+                    d_ff=model_config.d_ff,
+                    max_seq_length=model_config.max_seq_length,
+                    dropout=model_config.dropout
+                )
+    else:
+        # Initialize model from scratch
+        logger.info("Initializing new model from scratch")
+        if model_config.model_type.lower() == "gpt":
+            model = GPTModel(
+                vocab_size=tokenizer.vocab_size,
+                d_model=model_config.d_model,
+                num_heads=model_config.num_heads,
+                num_layers=model_config.num_layers,
+                d_ff=model_config.d_ff,
+                max_seq_length=model_config.max_seq_length,
+                dropout=model_config.dropout
+            )
+        else:  # "transformer"
+            model = TransformerModel(
+                vocab_size=tokenizer.vocab_size,
+                d_model=model_config.d_model,
+                num_heads=model_config.num_heads,
+                num_encoder_layers=model_config.num_encoder_layers,
+                num_decoder_layers=model_config.num_decoder_layers,
+                d_ff=model_config.d_ff,
+                max_seq_length=model_config.max_seq_length,
+                dropout=model_config.dropout
+            )
+            
+    # Prepare the datasets
+    if args.use_slimpajama:
+        # Use the SlimPajama-30B dataset
+        logger.info(f"Loading SlimPajama-30B dataset (subset: {args.slimpajama_subset})")
+        
+        # Configure dataset access
+        # Based on dataset documentation and availability, update repository details
+        if args.slimpajama_subset == "arxiv":
+            slimpajama_repo = "cerebras/SlimPajama-627B-arxiv"
+            slimpajama_config = None
+        elif args.slimpajama_subset == "github":
+            slimpajama_repo = "cerebras/SlimPajama-627B-github"
+            slimpajama_config = None
+        elif args.slimpajama_subset == "stackexchange":
+            slimpajama_repo = "cerebras/SlimPajama-627B-stackexchange"  
+            slimpajama_config = None
+        elif args.slimpajama_subset == "wiki":
+            slimpajama_repo = "cerebras/SlimPajama-627B-wiki"
+            slimpajama_config = None
+        elif args.slimpajama_subset == "books":
+            slimpajama_repo = "cerebras/SlimPajama-627B-books"
+            slimpajama_config = None
+        elif args.slimpajama_subset == "c4":
+            slimpajama_repo = "cerebras/SlimPajama-627B-c4"
+            slimpajama_config = None
+        elif args.slimpajama_subset == "common_crawl":
+            slimpajama_repo = "cerebras/SlimPajama-627B-common_crawl"
+            slimpajama_config = None
+        else:
+            # Use the main repository for the balanced mix of domains
+            slimpajama_repo = "cerebras/SlimPajama-627B"
+            slimpajama_config = "default"
+            logger.info("Using SlimPajama balanced mix across all domains")
+        
+        logger.info(f"Attempting to load SlimPajama dataset from repository: {slimpajama_repo}")
+        
+        try:
+            # Attempt to load the dataset with appropriate configurations
+            raw_datasets = load_dataset(
+                slimpajama_repo,
+                slimpajama_config,
+                cache_dir=datasets_cache_dir,
+                trust_remote_code=True
+            )
+            logger.info(f"Successfully loaded SlimPajama dataset with {len(raw_datasets['train'])} training examples")
+        except Exception as e:
+            logger.error(f"Error loading SlimPajama dataset: {e}")
+            logger.warning("Permission issues or dataset not available. Falling back to default dataset...")
+            
+            # Fall back to default dataset
+            logger.info(f"Using fallback dataset: {data_config.dataset_name}/{data_config.dataset_config_name}")
+            raw_datasets = load_dataset(
+                data_config.dataset_name,
+                data_config.dataset_config_name,
+                cache_dir=datasets_cache_dir
+            )
+    else:
+        # Use the configured dataset
+        logger.info(f"Loading dataset: {data_config.dataset_name}/{data_config.dataset_config_name}")
+        raw_datasets = load_dataset(
+            data_config.dataset_name, 
+            data_config.dataset_config_name,
+            cache_dir=datasets_cache_dir
+        )
     
     # Prepare datasets
     if args.debug_mode:
@@ -401,12 +547,27 @@ def main():
         logger.debug(f"Raw dataset structure: {raw_datasets}")
         logger.debug(f"Max sequence length: {model_config.max_seq_length}")
         
+        # Log dataset fields if available
+        if "train" in raw_datasets:
+            sample = raw_datasets["train"][0] if len(raw_datasets["train"]) > 0 else {}
+            logger.debug(f"Sample data fields: {list(sample.keys())}")
+    
+    # For SlimPajama, ensure we use the right text field
+    text_field = "text"
+    if args.use_slimpajama and "train" in raw_datasets:
+        # Check sample data to determine the right field name
+        sample = raw_datasets["train"][0] if len(raw_datasets["train"]) > 0 else {}
+        if "text" not in sample and "content" in sample:
+            text_field = "content"
+            logger.info(f"Using '{text_field}' as the text field for SlimPajama dataset")
+    
     train_dataset, eval_dataset = prepare_datasets(
         raw_datasets, 
         tokenizer, 
         max_train_samples=data_config.max_train_samples,
         max_val_samples=data_config.max_val_samples,
-        max_seq_length=model_config.max_seq_length
+        max_seq_length=model_config.max_seq_length,
+        text_column_name=text_field
     )
     
     if args.debug_mode:
