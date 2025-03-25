@@ -45,15 +45,19 @@ def parse_args():
     parser.add_argument("--max_length", type=int, default=100,
                         help="Maximum length of generated text (including prompt)")
     parser.add_argument("--temperature", type=float, default=1.0,
-                        help="Temperature for sampling")
+                        help="Temperature for sampling (higher = more random)")
     parser.add_argument("--top_k", type=int, default=50,
-                        help="Top-k filtering parameter")
+                        help="Top-k filtering parameter (0 to disable)")
     parser.add_argument("--top_p", type=float, default=0.95,
-                        help="Top-p (nucleus) filtering parameter")
+                        help="Top-p (nucleus) filtering parameter (1.0 to disable)")
     parser.add_argument("--do_sample", action="store_true",
                         help="Sample from the distribution instead of greedy decoding")
     parser.add_argument("--num_return_sequences", type=int, default=1,
                         help="Number of sequences to generate")
+    parser.add_argument("--repetition_penalty", type=float, default=1.2,
+                        help="Repetition penalty (1.0 = no penalty, >1.0 decreases repetition)")
+    parser.add_argument("--min_length", type=int, default=0,
+                        help="Minimum length of the sequence to be generated")
     
     return parser.parse_args()
 
@@ -94,7 +98,7 @@ def main():
     
     # Generate text
     with torch.no_grad():
-        # For GPT model, we use the built-in generate method
+        # For GPT model, we use the built-in generate method with enhanced parameters
         output_sequences = model.generate(
             input_ids=encoded_prompt,
             max_new_tokens=args.max_length - encoded_prompt.size(1),
@@ -102,13 +106,22 @@ def main():
             top_k=args.top_k,
             top_p=args.top_p,
             do_sample=args.do_sample,
-            eos_token_id=tokenizer.eos_token_id
+            eos_token_id=tokenizer.eos_token_id,
+            repetition_penalty=args.repetition_penalty,
+            min_length=args.min_length
         )
     
     # Decode and print generated text
     for i, sequence in enumerate(output_sequences):
         generated_text = tokenizer.decode(sequence, skip_special_tokens=True)
         print(f"\nGenerated sequence {i+1}:\n{generated_text}")
+        
+        # Debug tokenization if there are issues
+        if any(c for c in generated_text if ord(c) > 127):
+            print("\nDebug token information:")
+            tokens = tokenizer.convert_ids_to_tokens(sequence)
+            for j, token in enumerate(tokens[:20]):  # Show first 20 tokens
+                print(f"Token {j}: {token} -> {tokenizer.decode([sequence[j]])}")
 
 
 if __name__ == "__main__":

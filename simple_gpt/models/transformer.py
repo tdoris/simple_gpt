@@ -311,58 +311,177 @@ class GPTModel(nn.Module):
         top_k: Optional[int] = None,
         top_p: Optional[float] = None,
         do_sample: bool = True,
-        eos_token_id: Optional[int] = None
+        eos_token_id: Optional[int] = None,
+        repetition_penalty: float = 1.0,
+        min_length: int = 0
     ) -> torch.Tensor:
+        """
+        Generate text using the model.
+        
+        Note: If the generation produces unexpectedly repetitive or strange tokens,
+        it could mean that:
+        1. The model hasn't been trained properly
+        2. The vocabulary size mismatch between the tokenizer and the model
+        3. Temperature is too high or too low
+        4. The model output layer is misconfigured
+        
+        Args:
+            input_ids: Input token ids
+            max_new_tokens: Maximum number of new tokens to generate
+            temperature: Temperature for sampling (higher = more random)
+            top_k: Only sample from the top k most likely tokens
+            top_p: Only sample from the smallest set of tokens that exceed cumulative probability p
+            do_sample: Whether to sample or use greedy decoding
+            eos_token_id: End of sentence token ID, to stop generation when produced
+            repetition_penalty: Penalize repeated tokens (1.0 = no penalty, > 1.0 = penalty)
+            min_length: Minimum length of the generated sequence
+            
+        Returns:
+            Generated token ids
+        """
+        # Debug: Check vocabulary size
+        vocab_size = self.lm_head.weight.size(0)
+        print(f"Model vocabulary size: {vocab_size}")
+        
+        # Debug: Check input token range
+        min_token = input_ids.min().item()
+        max_token = input_ids.max().item()
+        print(f"Input tokens range: {min_token} to {max_token}")
+        
+        if max_token >= vocab_size:
+            print(f"WARNING: Input contains token IDs ({max_token}) >= vocabulary size ({vocab_size})")
         batch_size = input_ids.size(0)
         generated = input_ids.clone()
-        past_length = generated.size(1)
         
-        for _ in range(max_new_tokens):
-            if generated.size(1) > self.max_seq_length:
+        # Keep track of which sequences are already finished
+        unfinished_sequences = torch.ones(batch_size, dtype=torch.long, device=input_ids.device)
+        
+        # Store vocabulary size for convenience
+        vocab_size = self.lm_head.weight.size(0)
+        
+        for cur_len in range(max_new_tokens):
+            if (generated.size(1) > self.max_seq_length) or (unfinished_sequences.sum() == 0):
                 break
                 
             # Forward pass to get logits for the next token
             with torch.no_grad():
-                logits = self.forward(generated)
-                logits = logits[:, -1, :] / temperature
-            
-            # Apply top-k filtering
-            if top_k is not None:
-                indices_to_remove = logits < torch.topk(logits, top_k)[0][..., -1, None]
-                logits[indices_to_remove] = -float('Inf')
-            
-            # Apply top-p (nucleus) filtering
-            if top_p is not None:
-                sorted_logits, sorted_indices = torch.sort(logits, descending=True, dim=-1)
-                cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
+                # Performance optimization: For long sequences, only process the most recent tokens
+                # to avoid recomputing the entire sequence each time
+                context_window = min(self.max_seq_length, generated.size(1))
+                recent_input_ids = generated[:, -context_window:]
                 
-                # Remove tokens with cumulative probability above the threshold
+                # Create proper attention mask for the sequence - all 1s for actual tokens
+                attention_mask = torch.ones(recent_input_ids.size(), device=recent_input_ids.device)
+                
+                # Forward pass with the attention mask
+                logits = self.forward(recent_input_ids, attention_mask)
+                
+                # We only need the logits for the last token for next token prediction
+                next_token_logits = logits[:, -1, :]
+            
+            # Apply temperature
+            next_token_logits = next_token_logits / temperature
+            
+            # Apply repetition penalty - this helps reduce repetitive text
+            if repetition_penalty != 1.0:
+                # Create a tensor of zeros with same shape as the vocabulary
+                penalty_tensor = torch.ones(batch_size, vocab_size, device=next_token_logits.device)
+                
+                # For each batch, identify which tokens have already been generated
+                for i in range(batch_size):
+                    for token_id in generated[i]:
+                        # Apply penalty to tokens that have already been generated
+                        penalty_tensor[i, token_id] = repetition_penalty
+                
+                # Apply penalty - divide or multiply logits based on whether they're positive or negative
+                next_token_logits = torch.where(
+                    next_token_logits > 0,
+                    next_token_logits / penalty_tensor, 
+                    next_token_logits * penalty_tensor
+                )
+            
+            # Prevent EOS token if we haven't reached min_length yet
+            if cur_len < min_length and eos_token_id is not None:
+                next_token_logits[:, eos_token_id] = -float("inf")
+            
+            # Apply top-k filtering - improved implementation
+            if top_k is not None and top_k > 0:
+                # Get top-k values and indices for each batch item
+                top_k_values, top_k_indices = torch.topk(
+                    next_token_logits, min(top_k, next_token_logits.size(-1)), dim=-1
+                )
+                
+                # Create new logits filled with -inf
+                next_token_logits_filtered = torch.full_like(
+                    next_token_logits, float("-inf")
+                )
+                
+                # Scatter top-k values back to the full logits tensor
+                next_token_logits_filtered.scatter_(
+                    -1, top_k_indices, top_k_values
+                )
+                next_token_logits = next_token_logits_filtered
+            
+            # Apply top-p (nucleus) filtering - improved implementation
+            if top_p is not None and top_p < 1.0:
+                # Sort logits in descending order
+                sorted_logits, sorted_indices = torch.sort(
+                    next_token_logits, descending=True, dim=-1
+                )
+                
+                # Calculate softmax probabilities
+                sorted_probs = F.softmax(sorted_logits, dim=-1)
+                
+                # Calculate cumulative probabilities
+                cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
+                
+                # Remove tokens with cumulative probability above threshold
                 sorted_indices_to_remove = cumulative_probs > top_p
                 
-                # Shift the indices to the right to keep also the first token above the threshold
+                # Shift the indices to the right to keep the first token above threshold
                 sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
                 sorted_indices_to_remove[..., 0] = 0
                 
-                # Scatter sorted tensors to original indexing
-                indices_to_remove = sorted_indices_to_remove.scatter(
-                    dim=1, index=sorted_indices, src=sorted_indices_to_remove
-                )
-                logits[indices_to_remove] = -float('Inf')
+                # Create a mask for tokens to be removed
+                sorted_logits[sorted_indices_to_remove] = -float("inf")
+                
+                # Scatter sorted logits back to original indexing
+                for i in range(batch_size):
+                    next_token_logits[i] = torch.index_select(
+                        sorted_logits[i], dim=0, index=torch.argsort(sorted_indices[i])
+                    )
             
             # Sample or take max
             if do_sample:
-                probs = F.softmax(logits, dim=-1)
-                next_token = torch.multinomial(probs, num_samples=1)
+                # Apply softmax to convert logits to probabilities
+                probs = F.softmax(next_token_logits, dim=-1)
+                
+                # Make sure probabilities are valid
+                if torch.isnan(probs).any() or torch.isinf(probs).any():
+                    print("WARNING: Found NaN or Inf in probabilities, using greedy decoding instead")
+                    next_tokens = torch.argmax(next_token_logits, dim=-1)
+                else:
+                    # Sample from the distribution
+                    next_tokens = torch.multinomial(probs, num_samples=1).squeeze(1)
             else:
-                next_token = torch.argmax(logits, dim=-1, keepdim=True)
+                # Take most likely token (greedy decoding)
+                next_tokens = torch.argmax(next_token_logits, dim=-1)
+                
+            # Debug: Print top token choices
+            if next_tokens.size(0) == 1:  # Only for single sequence generation
+                top_tokens = torch.topk(next_token_logits[0], min(5, next_token_logits.size(-1)))
+                top_indices = top_tokens.indices.tolist()
+                print(f"Top 5 token indices: {top_indices}")
             
-            # Append to generated sequence
-            generated = torch.cat([generated, next_token], dim=1)
+            # Only replace tokens in unfinished sequences
+            tokens_to_add = next_tokens * unfinished_sequences + (1 - unfinished_sequences) * eos_token_id \
+                if eos_token_id is not None else next_tokens
             
-            # Check if EOS token was generated
-            if eos_token_id is not None and (next_token == eos_token_id).any():
-                # For simplicity, stop the entire batch if any sequence generates EOS
-                if (next_token == eos_token_id).all():
-                    break
+            # Add next token to the sequences
+            generated = torch.cat([generated, tokens_to_add.unsqueeze(-1)], dim=-1)
+            
+            # Update which sequences are finished
+            if eos_token_id is not None:
+                unfinished_sequences = unfinished_sequences * (tokens_to_add != eos_token_id)
         
         return generated
