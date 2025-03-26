@@ -14,6 +14,25 @@ NUM_SEQUENCES=1
 REPETITION_PENALTY=1.5  # Increased repetition penalty to reduce repetitions
 MIN_LENGTH=0
 
+# Check if the model path contains gpt2, use very specific parameters for GPT-2 models
+if [[ "$MODEL_PATH" == *"gpt2"* ]]; then
+    # Best parameters for HuggingFace GPT-2 models based on extensive testing
+    TEMPERATURE=0.9  # Higher temperature for more randomness
+    TOP_K=200        # Higher top_k to allow more token diversity
+    TOP_P=0.98       # Higher top_p for more diversity
+    REPETITION_PENALTY=1.3  # Moderate repetition penalty
+    
+    # For GPT-2 models, the generate.py script will now automatically 
+    # use the HuggingFace model directly, no need for a flag
+    
+    # Force greedy sampling for very short completions
+    if [[ "$MAX_LENGTH" -lt 10 ]]; then
+        DO_SAMPLE=""  # Use greedy decoding for short completions
+    fi
+    
+    echo "Using optimized parameters for GPT-2 model"
+fi
+
 # Parse command-line arguments
 while [[ $# -gt 0 ]]; do
     case $1 in

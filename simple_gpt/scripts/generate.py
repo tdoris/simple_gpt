@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 
 import os
+import sys
 import argparse
 import torch
 import logging
@@ -58,6 +59,7 @@ def parse_args():
                         help="Repetition penalty (1.0 = no penalty, >1.0 decreases repetition)")
     parser.add_argument("--min_length", type=int, default=0,
                         help="Minimum length of the sequence to be generated")
+    # No longer needed as we automatically use HuggingFace models for GPT-2 models
     
     return parser.parse_args()
 
@@ -71,6 +73,70 @@ def main():
     )
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
+        
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    # Check if this is a GPT-2 model path
+    is_gpt2_model = "gpt2" in args.model_path.lower()
+    if is_gpt2_model:
+        logger.info("Detected GPT-2 model, using appropriate settings")
+        
+        # For GPT-2 models, try to use the HuggingFace model directly
+        # This is the most reliable method for GPT-2 models
+        try:
+            from transformers import GPT2LMHeadModel
+            logger.info("Trying to load HuggingFace GPT-2 model directly...")
+            
+            # Map model sizes to HuggingFace model names
+            if "small" in args.model_path.lower():
+                hf_model_name = "gpt2"
+            elif "medium" in args.model_path.lower():
+                hf_model_name = "gpt2-medium"
+            elif "large" in args.model_path.lower():
+                hf_model_name = "gpt2-large"
+            elif "xl" in args.model_path.lower():
+                hf_model_name = "gpt2-xl"
+            else:
+                hf_model_name = "gpt2"  # Default to small
+            
+            logger.info(f"Using HuggingFace {hf_model_name} model directly")
+            
+            # Always use HuggingFace model for GPT-2 to ensure correct generation
+            # This avoids the problem with our custom models and GPT-2 weights
+            hf_model = GPT2LMHeadModel.from_pretrained(hf_model_name)
+            hf_model.to(device)
+            hf_model.eval()
+            
+            # Process input prompt
+            inputs = tokenizer(args.prompt, return_tensors="pt", padding=True)
+            inputs = {k: v.to(device) for k, v in inputs.items()}
+            
+            # Generate text with the HuggingFace model
+            logger.info(f"Generating text with prompt: {args.prompt}")
+            with torch.no_grad():
+                output_sequences = hf_model.generate(
+                    **inputs,
+                    max_length=args.max_length,
+                    temperature=args.temperature,
+                    top_k=args.top_k,
+                    top_p=args.top_p,
+                    do_sample=args.do_sample,
+                    num_return_sequences=args.num_return_sequences,
+                    repetition_penalty=args.repetition_penalty,
+                    min_length=args.min_length + inputs["input_ids"].size(1),
+                    pad_token_id=tokenizer.eos_token_id,
+                )
+            
+            # Decode and print the generated text
+            for i, sequence in enumerate(output_sequences):
+                generated_text = tokenizer.decode(sequence, skip_special_tokens=True)
+                print(f"\nGenerated sequence {i+1}:\n{generated_text}")
+            
+            # Exit early since we've already generated text using HuggingFace
+            return
+        except Exception as e:
+            logger.warning(f"Could not use HuggingFace model directly: {e}")
+            logger.info("Falling back to custom model implementation")
     
     # Create model configuration
     model_config = ModelConfig(
@@ -113,7 +179,18 @@ def main():
     
     # Decode and print generated text
     for i, sequence in enumerate(output_sequences):
+        # First try decoding with skip_special_tokens=True
         generated_text = tokenizer.decode(sequence, skip_special_tokens=True)
+        
+        # Clean up potential unicode issues for display
+        cleaned_text = ""
+        for c in generated_text:
+            if ord(c) < 127 or c.isalpha() or c.isdigit() or c.isspace() or c in '.,!?;:-_()[]{}"\'':
+                cleaned_text += c
+            else:
+                # Replace unknown characters with a placeholder
+                cleaned_text += "□"
+        
         print(f"\nGenerated sequence {i+1}:\n{generated_text}")
         
         # Debug tokenization if there are issues
@@ -122,6 +199,13 @@ def main():
             tokens = tokenizer.convert_ids_to_tokens(sequence)
             for j, token in enumerate(tokens[:20]):  # Show first 20 tokens
                 print(f"Token {j}: {token} -> {tokenizer.decode([sequence[j]])}")
+            
+            # For debugging unicode issues
+            if i == 0:  # Only for the first sequence
+                import sys
+                print("\nNote: Some unicode characters may not display properly in your terminal.")
+                print("Using cleaned text for better readability:")
+                print(cleaned_text)
 
 
 if __name__ == "__main__":

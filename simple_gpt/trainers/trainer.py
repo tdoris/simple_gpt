@@ -175,8 +175,13 @@ class Trainer:
                         self.save_model(os.path.join(self.output_dir, f"checkpoint-{global_step}"))
                 
                 # Update description with current loss
+                if global_step > 0:
+                    current_loss = tr_loss / global_step
+                else:
+                    current_loss = 0.0
+                    
                 epoch_iterator.set_description(
-                    f"Epoch {epoch+1}/{self.config.num_train_epochs} (loss: {tr_loss/global_step:.4f})"
+                    f"Epoch {epoch+1}/{self.config.num_train_epochs} (loss: {current_loss:.4f})"
                 )
                 
                 # Check if we reached max_steps
@@ -386,6 +391,126 @@ class Trainer:
         
         # Load state dict
         state_dict = torch.load(os.path.join(model_path, "pytorch_model.bin"), map_location="cpu")
-        model.load_state_dict(state_dict)
+        
+        # Check if this is a HuggingFace model format or our format
+        # HF models have keys like 'transformer.h.0.attn.c_attn.weight'
+        is_hf_model = any('transformer.h' in key for key in state_dict.keys())
+        
+        if is_hf_model:
+            logger.info("Detected HuggingFace GPT-2 model format, converting weights...")
+            # Convert HuggingFace GPT-2 weights to our format
+            converted_state_dict = {}
+            d_model = model_config.d_model
+            num_layers = model_config.num_layers
+            
+            # Map the embeddings and final layer norm
+            if 'transformer.wte.weight' in state_dict:
+                converted_state_dict["token_embedding.weight"] = state_dict["transformer.wte.weight"]
+                converted_state_dict["lm_head.weight"] = state_dict["transformer.wte.weight"]  # Weight tying
+            if 'transformer.wpe.weight' in state_dict:
+                converted_state_dict["position_embedding.weight"] = state_dict["transformer.wpe.weight"]
+            if 'transformer.ln_f.weight' in state_dict:
+                converted_state_dict["norm.weight"] = state_dict["transformer.ln_f.weight"]
+            if 'transformer.ln_f.bias' in state_dict:
+                converted_state_dict["norm.bias"] = state_dict["transformer.ln_f.bias"]
+            
+            # Map each layer
+            for i in range(num_layers):
+                hf_prefix = f"transformer.h.{i}."
+                our_prefix = f"layers.{i}."
+                
+                # Layer normalization 1
+                if hf_prefix + "ln_1.weight" in state_dict:
+                    converted_state_dict[our_prefix + "norm1.weight"] = state_dict[hf_prefix + "ln_1.weight"]
+                if hf_prefix + "ln_1.bias" in state_dict:
+                    converted_state_dict[our_prefix + "norm1.bias"] = state_dict[hf_prefix + "ln_1.bias"]
+                
+                # Layer normalization 2
+                if hf_prefix + "ln_2.weight" in state_dict:
+                    converted_state_dict[our_prefix + "norm2.weight"] = state_dict[hf_prefix + "ln_2.weight"]
+                if hf_prefix + "ln_2.bias" in state_dict:
+                    converted_state_dict[our_prefix + "norm2.bias"] = state_dict[hf_prefix + "ln_2.bias"]
+                
+                # Self-attention weights - GPT-2 uses a combined QKV projection
+                # We need to split it for our model
+                if hf_prefix + "attn.c_attn.weight" in state_dict:
+                    c_attn_weight = state_dict[hf_prefix + "attn.c_attn.weight"]
+                    c_attn_bias = state_dict[hf_prefix + "attn.c_attn.bias"]
+                    
+                    # Split into query, key, value sections
+                    split_size = d_model
+                    w_splits = torch.split(c_attn_weight, split_size, dim=1)
+                    b_splits = torch.split(c_attn_bias, split_size)
+                    
+                    qw, kw, vw = w_splits
+                    qb, kb, vb = b_splits
+                    
+                    # Transpose to match our model's format
+                    qw = qw.transpose(0, 1)
+                    kw = kw.transpose(0, 1)
+                    vw = vw.transpose(0, 1)
+                    
+                    # Store query, key, value weights and biases
+                    converted_state_dict[our_prefix + "self_attention.query.weight"] = qw
+                    converted_state_dict[our_prefix + "self_attention.query.bias"] = qb
+                    converted_state_dict[our_prefix + "self_attention.key.weight"] = kw
+                    converted_state_dict[our_prefix + "self_attention.key.bias"] = kb
+                    converted_state_dict[our_prefix + "self_attention.value.weight"] = vw
+                    converted_state_dict[our_prefix + "self_attention.value.bias"] = vb
+                
+                # Output projection
+                if hf_prefix + "attn.c_proj.weight" in state_dict:
+                    c_proj_weight = state_dict[hf_prefix + "attn.c_proj.weight"]
+                    c_proj_bias = state_dict[hf_prefix + "attn.c_proj.bias"]
+                    
+                    # Transpose the projection weight to match our model's expected shape
+                    converted_state_dict[our_prefix + "self_attention.output_layer.weight"] = c_proj_weight.transpose(0, 1)
+                    converted_state_dict[our_prefix + "self_attention.output_layer.bias"] = c_proj_bias
+                
+                # Feed forward network
+                if hf_prefix + "mlp.c_fc.weight" in state_dict:
+                    # Transpose to match our model's expectations
+                    converted_state_dict[our_prefix + "feed_forward.fc1.weight"] = state_dict[hf_prefix + "mlp.c_fc.weight"].transpose(0, 1)
+                    converted_state_dict[our_prefix + "feed_forward.fc1.bias"] = state_dict[hf_prefix + "mlp.c_fc.bias"]
+                    converted_state_dict[our_prefix + "feed_forward.fc2.weight"] = state_dict[hf_prefix + "mlp.c_proj.weight"].transpose(0, 1)
+                    converted_state_dict[our_prefix + "feed_forward.fc2.bias"] = state_dict[hf_prefix + "mlp.c_proj.bias"]
+            
+            # Use the converted state dict
+            state_dict = converted_state_dict
+            logger.info("Successfully converted HuggingFace GPT-2 weights to our format")
+        
+        # Try to load the state dict
+        try:
+            model.load_state_dict(state_dict)
+        except RuntimeError as e:
+            # If there's an error, we'll try to help debug it
+            logger.warning(f"Error loading state dict: {e}")
+            logger.info("Checking state dict keys...")
+            
+            # Print some diagnostic information
+            model_keys = set(model.state_dict().keys())
+            state_dict_keys = set(state_dict.keys())
+            
+            missing_keys = model_keys - state_dict_keys
+            unexpected_keys = state_dict_keys - model_keys
+            
+            if missing_keys:
+                logger.warning(f"Missing {len(missing_keys)} keys in state dict:")
+                for key in sorted(list(missing_keys))[:10]:  # Show first 10
+                    logger.warning(f"  {key}")
+                if len(missing_keys) > 10:
+                    logger.warning(f"  ... and {len(missing_keys) - 10} more")
+            
+            if unexpected_keys:
+                logger.warning(f"Unexpected {len(unexpected_keys)} keys in state dict:")
+                for key in sorted(list(unexpected_keys))[:10]:  # Show first 10
+                    logger.warning(f"  {key}")
+                if len(unexpected_keys) > 10:
+                    logger.warning(f"  ... and {len(unexpected_keys) - 10} more")
+            
+            # If we have detailed shape info
+            if missing_keys:
+                logger.warning("Try downloading the model again using fetch_gpt2_weights.py")
+                raise RuntimeError("Failed to load model. See warnings above.")
         
         return model

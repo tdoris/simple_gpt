@@ -379,8 +379,12 @@ class GPTModel(nn.Module):
                 # We only need the logits for the last token for next token prediction
                 next_token_logits = logits[:, -1, :]
             
-            # Apply temperature
-            next_token_logits = next_token_logits / temperature
+            # Apply temperature (safely)
+            if temperature > 0:
+                next_token_logits = next_token_logits / temperature
+            else:
+                # If temperature is zero or negative, use greedy decoding
+                do_sample = False
             
             # Apply repetition penalty - this helps reduce repetitive text
             if repetition_penalty != 1.0:
@@ -456,13 +460,23 @@ class GPTModel(nn.Module):
                 # Apply softmax to convert logits to probabilities
                 probs = F.softmax(next_token_logits, dim=-1)
                 
-                # Make sure probabilities are valid
-                if torch.isnan(probs).any() or torch.isinf(probs).any():
-                    print("WARNING: Found NaN or Inf in probabilities, using greedy decoding instead")
+                # Make sure probabilities are valid and sum to 1
+                if torch.isnan(probs).any() or torch.isinf(probs).any() or not torch.all(probs >= 0):
+                    print("WARNING: Found NaN, Inf or negative values in probabilities, using greedy decoding instead")
                     next_tokens = torch.argmax(next_token_logits, dim=-1)
                 else:
-                    # Sample from the distribution
-                    next_tokens = torch.multinomial(probs, num_samples=1).squeeze(1)
+                    # Ensure probabilities sum to 1 for each batch item
+                    probs = probs / probs.sum(dim=-1, keepdim=True)
+                    
+                    # Handle any remaining numerical issues
+                    probs = torch.nan_to_num(probs, nan=1e-5, posinf=1.0, neginf=0.0)
+                    
+                    try:
+                        # Sample from the distribution
+                        next_tokens = torch.multinomial(probs, num_samples=1).squeeze(1)
+                    except Exception as e:
+                        print(f"WARNING: Error in multinomial sampling: {e}, using greedy decoding instead")
+                        next_tokens = torch.argmax(next_token_logits, dim=-1)
             else:
                 # Take most likely token (greedy decoding)
                 next_tokens = torch.argmax(next_token_logits, dim=-1)
