@@ -7,6 +7,7 @@
 MODEL_A="Default-Model-A"
 MODEL_B="Default-Model-B"
 PROMPTS_PER_CATEGORY=10
+CATEGORIES=5
 OUTPUT_FILE=""
 
 # Function to show usage
@@ -17,6 +18,7 @@ show_usage() {
   echo "  --model-a <name>          Name of the first model (required)"
   echo "  --model-b <name>          Name of the second model (required)"
   echo "  --prompts <number>        Number of prompts per category (default: 10, max: 10)"
+  echo "  --categories <number>     Number of categories to test (default: 5, max: 5)"
   echo "  --output <file>           Path to save the JSON results (default: auto-generated)"
   echo "  --help                    Show this help message"
   echo ""
@@ -37,6 +39,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --prompts)
       PROMPTS_PER_CATEGORY="$2"
+      shift 2
+      ;;
+    --categories)
+      CATEGORIES="$2"
       shift 2
       ;;
     --output)
@@ -76,7 +82,7 @@ else
   OUTPUT_ARG=""
 fi
 
-COMMAND="python model_comparison.py --model-a \"$MODEL_A\" --model-b \"$MODEL_B\" --prompts-per-category $PROMPTS_PER_CATEGORY $OUTPUT_ARG"
+COMMAND="python model_comparison.py --model-a \"$MODEL_A\" --model-b \"$MODEL_B\" --prompts-per-category $PROMPTS_PER_CATEGORY --categories $CATEGORIES $OUTPUT_ARG"
 
 # Add a note about models being tested
 echo "Note: This script has been modified to work with local SimpleGPT models."
@@ -87,6 +93,7 @@ echo "Running model comparison with the following configuration:"
 echo "- Model A: $MODEL_A"
 echo "- Model B: $MODEL_B"
 echo "- Prompts per category: $PROMPTS_PER_CATEGORY"
+echo "- Number of categories: $CATEGORIES"
 if [ -n "$OUTPUT_FILE" ]; then
   echo "- Output file: $OUTPUT_FILE"
 else

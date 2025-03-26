@@ -234,7 +234,8 @@ class ModelComparer:
         model_a_path: str, 
         model_b_path: str,
         anthropic_api_key: str,
-        num_prompts_per_category: int = 1  # Reduced to 1 for quick testing
+        num_prompts_per_category: int = 1,  # Reduced to 1 for quick testing
+        num_categories: int = 5  # Default to all categories
     ):
         self.model_a_path = model_a_path
         self.model_b_path = model_b_path
@@ -242,6 +243,7 @@ class ModelComparer:
         self.model_a_name = os.path.basename(model_a_path.rstrip('/'))
         self.model_b_name = os.path.basename(model_b_path.rstrip('/'))
         self.num_prompts_per_category = num_prompts_per_category
+        self.num_categories = min(num_categories, 5)  # Cap at 5 categories
         self.results = ComparisonResults(model_a_name=self.model_a_name, model_b_name=self.model_b_name)
         
         # Initialize Anthropic client for Claude
@@ -251,7 +253,18 @@ class ModelComparer:
         """Select prompts from each category for the comparison."""
         selected_prompts = []
         
-        for category, prompts in PROMPT_CATEGORIES.items():
+        # Get a list of categories to use
+        categories = list(PROMPT_CATEGORIES.keys())
+        
+        # Limit to the requested number of categories
+        if self.num_categories < len(categories):
+            print(f"Limiting evaluation to {self.num_categories} out of {len(categories)} categories")
+            categories = random.sample(categories, self.num_categories)
+        
+        # Select prompts from each category
+        for category in categories:
+            prompts = PROMPT_CATEGORIES[category]
+            
             # Choose the minimum of available prompts and requested number
             num_to_select = min(self.num_prompts_per_category, len(prompts))
             
@@ -261,6 +274,8 @@ class ModelComparer:
             # Add the category and prompt to our list
             for prompt in category_prompts:
                 selected_prompts.append((category, prompt))
+                
+        print(f"Selected {len(selected_prompts)} prompts from {len(categories)} categories")
         
         return selected_prompts
     
@@ -389,13 +404,30 @@ class ModelComparer:
         """
         
         print(f"Evaluating responses for prompt: {prompt[:50]}...")
-        response = await self.claude_client.messages.create(
-            model="claude-3-5-sonnet-20240620",
-            max_tokens=4000,
-            messages=[
-                {"role": "user", "content": evaluation_prompt}
-            ]
-        )
+        
+        # Add retry logic for rate limits
+        max_retries = 3
+        retry_delay = 20  # start with 20 seconds
+        
+        for retry in range(max_retries):
+            try:
+                response = await self.claude_client.messages.create(
+                    model="claude-3-5-sonnet-20240620",
+                    max_tokens=4000,
+                    messages=[
+                        {"role": "user", "content": evaluation_prompt}
+                    ]
+                )
+                break  # Success, exit retry loop
+            except Exception as e:
+                if "rate_limit" in str(e).lower() and retry < max_retries - 1:
+                    # If it's a rate limit error and we have retries left
+                    wait_time = retry_delay * (retry + 1)  # Exponential backoff
+                    print(f"Rate limit hit. Waiting {wait_time} seconds before retry {retry+1}/{max_retries}...")
+                    await asyncio.sleep(wait_time)
+                else:
+                    # If it's not a rate limit error or we're out of retries, raise the exception
+                    raise
         
         evaluation_text = response.content[0].text
         
@@ -468,14 +500,49 @@ class ModelComparer:
         # Select prompts to use
         selected_prompts = self.select_prompts()
         
-        # Process all prompts
-        tasks = []
-        for category, prompt in selected_prompts:
-            task = self.process_single_prompt(category, prompt)
-            tasks.append(task)
-        
-        # Run all tasks concurrently
-        evaluations = await asyncio.gather(*tasks)
+        # Process prompts sequentially with rate limiting to avoid API rate limits
+        evaluations = []
+        for i, (category, prompt) in enumerate(selected_prompts):
+            print(f"Processing prompt {i+1}/{len(selected_prompts)}: {category}")
+            
+            try:
+                # Process one prompt at a time to avoid rate limiting
+                evaluation = await self.process_single_prompt(category, prompt)
+                evaluations.append(evaluation)
+                
+                # Add a delay between API calls to avoid rate limits
+                # Only add delay if there are more prompts to process
+                if i < len(selected_prompts) - 1:
+                    delay = 5  # 5 seconds between evaluations
+                    print(f"Rate limiting: waiting {delay} seconds before next evaluation...")
+                    await asyncio.sleep(delay)
+                    
+            except Exception as e:
+                print(f"Error processing prompt {i+1}: {e}")
+                print("Waiting 60 seconds before retrying...")
+                await asyncio.sleep(60)  # Wait longer on error
+                
+                try:
+                    # Retry once
+                    print(f"Retrying prompt {i+1}...")
+                    evaluation = await self.process_single_prompt(category, prompt)
+                    evaluations.append(evaluation)
+                except Exception as e2:
+                    print(f"Failed to process prompt after retry: {e2}")
+                    # Create a dummy evaluation showing the error
+                    dummy_eval = EvaluationResult(
+                        prompt=prompt,
+                        category=category,
+                        model_a_name=self.model_a_name,
+                        model_b_name=self.model_b_name,
+                        model_a_response="[Error generating response]",
+                        model_b_response="[Error generating response]",
+                        winner="tie",
+                        reasoning=f"Evaluation failed due to error: {e2}",
+                        score_a=0.5,
+                        score_b=0.5
+                    )
+                    evaluations.append(dummy_eval)
         
         # Update results with evaluations
         self.results.evaluations = evaluations
@@ -490,6 +557,8 @@ async def main():
     parser.add_argument("--api-key", type=str, help="Anthropic API key")
     parser.add_argument("--prompts-per-category", type=int, default=1, 
                         help="Number of prompts to use per category (max 10)")
+    parser.add_argument("--categories", type=int, default=5,
+                        help="Number of categories to test (max 5, default: all 5)")
     parser.add_argument("--output", type=str, help="Output JSON file path")
     
     args = parser.parse_args()
@@ -504,16 +573,22 @@ async def main():
     if args.prompts_per_category < 1 or args.prompts_per_category > 10:
         print("Error: prompts-per-category must be between 1 and 10")
         return
+        
+    # Validate categories
+    if args.categories < 1 or args.categories > 5:
+        print("Error: categories must be between 1 and 5")
+        return
     
     print(f"Starting comparison of {args.model_a} vs {args.model_b}")
-    print(f"Using {args.prompts_per_category} prompts per category across {len(PROMPT_CATEGORIES)} categories")
+    print(f"Using {args.prompts_per_category} prompts per category across up to {args.categories} categories")
     
     # Create comparer and run comparison
     comparer = ModelComparer(
         model_a_path=args.model_a,
         model_b_path=args.model_b,
         anthropic_api_key=anthropic_api_key,
-        num_prompts_per_category=args.prompts_per_category
+        num_prompts_per_category=args.prompts_per_category,
+        num_categories=args.categories
     )
     
     results = await comparer.run_comparison()

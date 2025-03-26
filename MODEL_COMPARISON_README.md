@@ -50,11 +50,12 @@ export ANTHROPIC_API_KEY=your_api_key_here
 Usage: ./run_model_comparison.sh [options]
 
 Options:
-  --model-a <name>          Name of the first model (required)
-  --model-b <name>          Name of the second model (required)
-  --prompts <number>        Number of prompts per category (default: 10, max: 10)
-  --output <file>           Path to save the JSON results (default: auto-generated)
-  --help                    Show this help message
+  --model-a <path>         Path to the first model (required)
+  --model-b <path>         Path to the second model (required)
+  --prompts <number>       Number of prompts per category (default: 10, max: 10)
+  --categories <number>    Number of categories to test (default: 5, max: 5)
+  --output <file>          Path to save the JSON results (default: auto-generated)
+  --help                   Show this help message
 ```
 
 ## Example Output
@@ -109,3 +110,5 @@ Currently, the script contains placeholder functions for getting model responses
 - You can run with fewer prompts to get faster results
 - The JSON output contains all detailed evaluations for further analysis
 - Claude evaluates based on accuracy, clarity, helpfulness, depth, and ethical considerations
+- The tool includes rate-limiting to avoid Anthropic API rate limits
+- For faster testing, use `--categories 1 --prompts 1` to test just a single prompt from one category
